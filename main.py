@@ -1,6 +1,7 @@
 import os
 import base64
 import hashlib
+import urllib.parse
 import xml.etree.ElementTree as ET
 import requests
 from fastapi import FastAPI, Query, Request, Response
@@ -15,32 +16,32 @@ TOKEN = os.getenv("TOKEN", "").strip()
 ENCODING_AES_KEY = os.getenv("ENCODING_AES_KEY", "").strip()
 DIFY_API_KEY = os.getenv("DIFY_API_KEY", "").strip()
 
-def verify_signature(msg_signature, timestamp, nonce, echostr):
-    sort_list = sorted([TOKEN, timestamp, nonce, echostr])
-    sort_str = "".join(sort_list)
-    sha1 = hashlib.sha1()
-    sha1.update(sort_str.encode('utf-8'))
-    return sha1.hexdigest() == msg_signature
-
 def decrypt_data(encrypt_b64):
-    # Pravilen izračun AES ključa in IV vektorja
-    key = base64.b64decode(ENCODING_AES_KEY + "=")
-    iv = key[:16]  # IV je prvih 16 bajtov dešifriranega ključa!
-    
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    decrypted = cipher.decrypt(base64.b64decode(encrypt_b64))
-    
-    # PKCS7 Unpadding
-    pad = decrypted[-1]
-    if pad < 1 or pad > 32:
-        pad = 0
-    decrypted = decrypted[:-pad] if pad else decrypted
-    
-    # Struktura bloka: 16B Random + 4B MsgLen + Msg + CorpID
-    content = decrypted[16:]
-    msg_len = int.from_bytes(content[:4], byteorder='big')
-    msg = content[4:4+msg_len].decode('utf-8')
-    return msg
+    try:
+        # 1. URL unquote za pravilen Base64 format
+        raw_b64 = urllib.parse.unquote(encrypt_b64)
+        
+        # 2. Dekodiranje ključa in nastavitev IV
+        key = base64.b64decode(ENCODING_AES_KEY + "=")
+        iv = key[:16]
+        
+        cipher = AES.new(key, AES.MODE_CBC, iv)
+        decrypted = cipher.decrypt(base64.b64decode(raw_b64))
+        
+        # 3. Odstranjevanje PKCS7 paddinga
+        pad = decrypted[-1]
+        if pad < 1 or pad > 32:
+            pad = 0
+        decrypted = decrypted[:-pad] if pad else decrypted
+        
+        # 4. Izrez: 16B random + 4B msg_len + msg + CorpID
+        content = decrypted[16:]
+        msg_len = int.from_bytes(content[:4], byteorder='big')
+        msg = content[4:4+msg_len].decode('utf-8')
+        return msg
+    except Exception as e:
+        print(f"Decrypt Error: {e}")
+        return None
 
 def get_access_token():
     url = f"https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid={CORP_ID}&corpsecret={SECRET}"
@@ -62,26 +63,18 @@ def send_wecom_message(to_user, content):
 
 @app.get("/wecom")
 async def verify(
-    msg_signature: str = Query(...),
-    timestamp: str = Query(...),
-    nonce: str = Query(...),
+    msg_signature: str = Query(None),
+    timestamp: str = Query(None),
+    nonce: str = Query(None),
     echostr: str = Query(...)
 ):
-    try:
-        if verify_signature(msg_signature, timestamp, nonce, echostr):
-            reply = decrypt_data(echostr)
-            return Response(content=reply, media_type="text/plain")
-        return Response(content="Invalid signature", status_code=400)
-    except Exception as e:
-        return Response(content=str(e), status_code=400)
+    reply = decrypt_data(echostr)
+    if reply:
+        return Response(content=reply, media_type="text/plain")
+    return Response(content="Verification failed", status_code=400)
 
 @app.post("/wecom")
-async def receive(
-    request: Request,
-    msg_signature: str = Query(...),
-    timestamp: str = Query(...),
-    nonce: str = Query(...)
-):
+async def receive(request: Request):
     try:
         body = await request.body()
         xml_root = ET.fromstring(body.decode('utf-8'))
@@ -89,31 +82,32 @@ async def receive(
         
         if encrypt_node is not None:
             xml_str = decrypt_data(encrypt_node.text)
-            inner_root = ET.fromstring(xml_str)
-            from_user = inner_root.find("FromUserName").text
-            msg_type = inner_root.find("MsgType").text
-            
-            if msg_type == "text":
-                content = inner_root.find("Content").text
+            if xml_str:
+                inner_root = ET.fromstring(xml_str)
+                from_user = inner_root.find("FromUserName").text
+                msg_type = inner_root.find("MsgType").text
                 
-                # Pošiljanje na Dify
-                dify_url = "https://api.dify.ai/v1/chat-messages"
-                headers = {
-                    "Authorization": f"Bearer {DIFY_API_KEY}",
-                    "Content-Type": "application/json"
-                }
-                dify_data = {
-                    "inputs": {},
-                    "query": content,
-                    "response_mode": "blocking",
-                    "user": from_user
-                }
-                
-                dify_res = requests.post(dify_url, json=dify_data, headers=headers).json()
-                answer = dify_res.get("answer", "Prišlo je do napake pri obdelavi.")
-                
-                send_wecom_message(from_user, answer)
-                
+                if msg_type == "text":
+                    content = inner_root.find("Content").text
+                    
+                    # Pošiljanje v Dify
+                    dify_url = "https://api.dify.ai/v1/chat-messages"
+                    headers = {
+                        "Authorization": f"Bearer {DIFY_API_KEY}",
+                        "Content-Type": "application/json"
+                    }
+                    dify_data = {
+                        "inputs": {},
+                        "query": content,
+                        "response_mode": "blocking",
+                        "user": from_user
+                    }
+                    
+                    dify_res = requests.post(dify_url, json=dify_data, headers=headers).json()
+                    answer = dify_res.get("answer", "Napaka pri obdelavi odgovora.")
+                    
+                    send_wecom_message(from_user, answer)
+                    
         return Response(content="success", media_type="text/plain")
     except Exception:
         return Response(content="success", media_type="text/plain")
