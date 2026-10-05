@@ -8,12 +8,12 @@ from Crypto.Cipher import AES
 
 app = FastAPI()
 
-CORP_ID = os.getenv("CORP_ID", "")
-AGENT_ID = os.getenv("AGENT_ID", "")
-SECRET = os.getenv("SECRET", "")
-TOKEN = os.getenv("TOKEN", "")
-ENCODING_AES_KEY = os.getenv("ENCODING_AES_KEY", "")
-DIFY_API_KEY = os.getenv("DIFY_API_KEY", "")
+CORP_ID = os.getenv("CORP_ID", "").strip()
+AGENT_ID = os.getenv("AGENT_ID", "").strip()
+SECRET = os.getenv("SECRET", "").strip()
+TOKEN = os.getenv("TOKEN", "").strip()
+ENCODING_AES_KEY = os.getenv("ENCODING_AES_KEY", "").strip()
+DIFY_API_KEY = os.getenv("DIFY_API_KEY", "").strip()
 
 def verify_signature(msg_signature, timestamp, nonce, echostr):
     sort_list = sorted([TOKEN, timestamp, nonce, echostr])
@@ -22,14 +22,22 @@ def verify_signature(msg_signature, timestamp, nonce, echostr):
     sha1.update(sort_str.encode('utf-8'))
     return sha1.hexdigest() == msg_signature
 
-def decrypt_msg(echostr):
+def decrypt_data(encrypt_b64):
     key = base64.b64decode(ENCODING_AES_KEY + "=")
     cipher = AES.new(key, AES.MODE_CBC, key[:16])
-    decrypted = cipher.decrypt(base64.b64decode(echostr))
+    decrypted = cipher.decrypt(base64.b64decode(encrypt_b64))
+    
+    # PKCS7 unpad
     pad = decrypted[-1]
-    content = decrypted[20:-pad]
-    xml_len = int.from_bytes(content[:4], byteorder='big')
-    return content[4:4+xml_len].decode('utf-8')
+    if pad < 1 or pad > 32:
+        pad = 0
+    decrypted = decrypted[:-pad] if pad else decrypted
+    
+    # Struktura: 16B random + 4B msg_len + msg + receiveid
+    content = decrypted[16:]
+    msg_len = int.from_bytes(content[:4], byteorder='big')
+    msg = content[4:4+msg_len].decode('utf-8')
+    return msg
 
 def get_access_token():
     url = f"https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid={CORP_ID}&corpsecret={SECRET}"
@@ -58,7 +66,7 @@ async def verify(
 ):
     try:
         if verify_signature(msg_signature, timestamp, nonce, echostr):
-            reply = decrypt_msg(echostr)
+            reply = decrypt_data(echostr)
             return Response(content=reply, media_type="text/plain")
         return Response(content="Invalid signature", status_code=400)
     except Exception as e:
@@ -77,7 +85,7 @@ async def receive(
         encrypt_node = xml_root.find("Encrypt")
         
         if encrypt_node is not None:
-            xml_str = decrypt_msg(encrypt_node.text)
+            xml_str = decrypt_data(encrypt_node.text)
             inner_root = ET.fromstring(xml_str)
             from_user = inner_root.find("FromUserName").text
             msg_type = inner_root.find("MsgType").text
