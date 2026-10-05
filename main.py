@@ -18,27 +18,21 @@ DIFY_API_KEY = os.getenv("DIFY_API_KEY", "").strip()
 
 def decrypt_data(encrypt_b64):
     try:
-        # 1. URL unquote
         raw_b64 = urllib.parse.unquote(encrypt_b64)
-        
-        # 2. Base64 dekodiranje AES ključa
         key = base64.b64decode(ENCODING_AES_KEY + "=")
         iv = key[:16]
         
         cipher = AES.new(key, AES.MODE_CBC, iv)
         decrypted = cipher.decrypt(base64.b64decode(raw_b64))
         
-        # 3. Odstranjevanje PKCS7 paddinga
         pad = decrypted[-1]
         if pad < 1 or pad > 32:
             pad = 0
         decrypted = decrypted[:-pad] if pad else decrypted
         
-        # 4. Izrez: 16B random + 4B msg_len + msg + CorpID
         content = decrypted[16:]
         msg_len = int.from_bytes(content[:4], byteorder='big')
         
-        # Varno dekodiranje z 'ignore' ali 'replace' če je kakšen nepravilen bajt
         msg_bytes = content[4:4+msg_len]
         return msg_bytes.decode('utf-8', errors='ignore')
     except Exception as e:
@@ -92,7 +86,7 @@ async def receive(request: Request):
                 if msg_type == "text":
                     content = inner_root.find("Content").text
                     
-                    # Pošiljanje v Dify
+                    # Pošiljanje v Dify API
                     dify_url = "https://api.dify.ai/v1/chat-messages"
                     headers = {
                         "Authorization": f"Bearer {DIFY_API_KEY}",
@@ -106,10 +100,12 @@ async def receive(request: Request):
                     }
                     
                     dify_res = requests.post(dify_url, json=dify_data, headers=headers).json()
-                    answer = dify_res.get("answer", "Napaka pri obdelavi odgovora.")
+                    answer = dify_res.get("answer", "Prišlo je do napake pri obdelavi v Dify-ju.")
                     
+                    # Pošiljanje odgovora nazaj v WeCom klepet
                     send_wecom_message(from_user, answer)
                     
         return Response(content="success", media_type="text/plain")
-    except Exception:
+    except Exception as e:
+        print(f"Receive Error: {e}")
         return Response(content="success", media_type="text/plain")
