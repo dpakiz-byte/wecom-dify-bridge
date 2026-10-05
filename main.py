@@ -36,17 +36,19 @@ def decrypt_data(encrypt_b64):
         msg_bytes = content[4:4+msg_len]
         return msg_bytes.decode('utf-8', errors='ignore')
     except Exception as e:
-        print(f"Decrypt Error: {e}")
+        print(f"[DECRYPT ERROR]: {e}")
         return None
 
 def get_access_token():
     url = f"https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid={CORP_ID}&corpsecret={SECRET}"
     res = requests.get(url).json()
+    print(f"[WECOM TOKEN RES]: {res}")
     return res.get("access_token")
 
 def send_wecom_message(to_user, content):
     access_token = get_access_token()
     if not access_token:
+        print("[WECOM ERROR]: Access token is missing")
         return
     url = f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={access_token}"
     data = {
@@ -55,7 +57,8 @@ def send_wecom_message(to_user, content):
         "agentid": int(AGENT_ID) if AGENT_ID.isdigit() else AGENT_ID,
         "text": {"content": content}
     }
-    requests.post(url, json=data)
+    res = requests.post(url, json=data).json()
+    print(f"[WECOM SEND RES]: {res}")
 
 @app.get("/wecom")
 async def verify(
@@ -78,6 +81,7 @@ async def receive(request: Request):
         
         if encrypt_node is not None:
             xml_str = decrypt_data(encrypt_node.text)
+            print(f"[DECRYPTED XML]: {xml_str}")
             if xml_str:
                 inner_root = ET.fromstring(xml_str)
                 from_user = inner_root.find("FromUserName").text
@@ -85,6 +89,7 @@ async def receive(request: Request):
                 
                 if msg_type == "text":
                     content = inner_root.find("Content").text
+                    print(f"[USER MSG]: {content} FROM: {from_user}")
                     
                     # Pošiljanje v Dify API
                     dify_url = "https://api.dify.ai/v1/chat-messages"
@@ -100,6 +105,7 @@ async def receive(request: Request):
                     }
                     
                     dify_res = requests.post(dify_url, json=dify_data, headers=headers).json()
+                    print(f"[DIFY RES]: {dify_res}")
                     answer = dify_res.get("answer", "Prišlo je do napake pri obdelavi v Dify-ju.")
                     
                     # Pošiljanje odgovora nazaj v WeCom klepet
@@ -107,5 +113,5 @@ async def receive(request: Request):
                     
         return Response(content="success", media_type="text/plain")
     except Exception as e:
-        print(f"Receive Error: {e}")
+        print(f"[RECEIVE ERROR]: {e}")
         return Response(content="success", media_type="text/plain")
