@@ -23,17 +23,20 @@ def verify_signature(msg_signature, timestamp, nonce, echostr):
     return sha1.hexdigest() == msg_signature
 
 def decrypt_data(encrypt_b64):
+    # Pravilen izračun AES ključa in IV vektorja
     key = base64.b64decode(ENCODING_AES_KEY + "=")
-    cipher = AES.new(key, AES.MODE_CBC, key[:16])
+    iv = key[:16]  # IV je prvih 16 bajtov dešifriranega ključa!
+    
+    cipher = AES.new(key, AES.MODE_CBC, iv)
     decrypted = cipher.decrypt(base64.b64decode(encrypt_b64))
     
-    # PKCS7 unpad
+    # PKCS7 Unpadding
     pad = decrypted[-1]
     if pad < 1 or pad > 32:
         pad = 0
     decrypted = decrypted[:-pad] if pad else decrypted
     
-    # Struktura: 16B random + 4B msg_len + msg + receiveid
+    # Struktura bloka: 16B Random + 4B MsgLen + Msg + CorpID
     content = decrypted[16:]
     msg_len = int.from_bytes(content[:4], byteorder='big')
     msg = content[4:4+msg_len].decode('utf-8')
@@ -93,7 +96,7 @@ async def receive(
             if msg_type == "text":
                 content = inner_root.find("Content").text
                 
-                # Pošiljanje v Dify
+                # Pošiljanje na Dify
                 dify_url = "https://api.dify.ai/v1/chat-messages"
                 headers = {
                     "Authorization": f"Bearer {DIFY_API_KEY}",
@@ -107,7 +110,7 @@ async def receive(
                 }
                 
                 dify_res = requests.post(dify_url, json=dify_data, headers=headers).json()
-                answer = dify_res.get("answer", "Napaka pri obdelavi odgovora.")
+                answer = dify_res.get("answer", "Prišlo je do napake pri obdelavi.")
                 
                 send_wecom_message(from_user, answer)
                 
