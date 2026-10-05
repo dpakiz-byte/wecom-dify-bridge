@@ -18,10 +18,10 @@ DIFY_API_KEY = os.getenv("DIFY_API_KEY", "").strip()
 
 def decrypt_data(encrypt_b64):
     try:
-        # 1. URL unquote za pravilen Base64 format
+        # 1. URL unquote
         raw_b64 = urllib.parse.unquote(encrypt_b64)
         
-        # 2. Dekodiranje ključa in nastavitev IV
+        # 2. Base64 dekodiranje AES ključa
         key = base64.b64decode(ENCODING_AES_KEY + "=")
         iv = key[:16]
         
@@ -37,8 +37,10 @@ def decrypt_data(encrypt_b64):
         # 4. Izrez: 16B random + 4B msg_len + msg + CorpID
         content = decrypted[16:]
         msg_len = int.from_bytes(content[:4], byteorder='big')
-        msg = content[4:4+msg_len].decode('utf-8')
-        return msg
+        
+        # Varno dekodiranje z 'ignore' ali 'replace' če je kakšen nepravilen bajt
+        msg_bytes = content[4:4+msg_len]
+        return msg_bytes.decode('utf-8', errors='ignore')
     except Exception as e:
         print(f"Decrypt Error: {e}")
         return None
